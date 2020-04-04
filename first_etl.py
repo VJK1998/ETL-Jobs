@@ -151,11 +151,12 @@ def upsertLenderCustomer():
         cursor = conn.cursor()
         conn.commit()
         for row in lenderCustomersToBeUpserted:
-            upsertQuery = 'INSERT INTO lender_customer (id,customer,lender_ref,rupeek_ref,lender,"createdAt","updatedAt")' \
+
+            upsertQuery = 'INSERT INTO lendercustomers_duplicate (id,customer,lender_ref,rupeek_ref,lender,"createdAt","updatedAt")' \
                           ' VALUES (\'{id}\',\'{customer}\',\'{lender_ref}\',\'{rupeek_ref}\',\'{lender}\',\'{createdAt}\', \'{updatedAt}\')' \
-                          ' ON CONFLICT (customer,lender_ref) DO UPDATE SET "rupeek_ref" = EXCLUDED."rupeek_ref", "lender" = EXCLUDED."lender"' \
-                          ' ""createdAt" = EXCLUDED."createdAt", "updatedAt" = EXCLUDED."updatedAt"'.format(
-                id=row.id, customer=row.customer, lender_ref=row.lender_ref, lender = row.lender, rupeek_ref = row.rupeek_ref,  createdAt=row.createdAt, updatedAt=row.updatedAt)
+                          ' ON CONFLICT (customer,rupeek_ref) DO UPDATE SET "lender_ref" = EXCLUDED."lender_ref", "lender" = EXCLUDED."lender", ' \
+                          ' "createdAt" = EXCLUDED."createdAt", "updatedAt" = EXCLUDED."updatedAt"'.format(
+                id=row.id, customer=row.customer, lender_ref=row.lender_ref, lender=row.lender, rupeek_ref=row.rupeek_ref,  createdAt=row.createdAt, updatedAt=row.updatedAt)
             cursor.execute(upsertQuery)
             conn.commit()
     finally:
