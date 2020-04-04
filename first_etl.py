@@ -64,12 +64,11 @@ def upsertCustomers(mongoUserDF):
         cursor = conn.cursor()
         conn.commit()
         for row in customersToBeUpserted:
-            upsertQuery = 'INSERT INTO customers (id,mongoid,"createdAt","updatedAt") VALUES (\'{id}\',\'{mongoid}\',\'{createdAt}\', \'{updatedAt}\')' \
+            upsertQuery = 'INSERT INTO customers_duplicate (id,mongoid,"createdAt","updatedAt") VALUES (\'{id}\',\'{mongoid}\',\'{createdAt}\', \'{updatedAt}\')' \
                       ' ON CONFLICT (mongoid) DO UPDATE SET "createdAt" = EXCLUDED."createdAt", "updatedAt" = EXCLUDED."updatedAt"'.format(
                         id=row.id, mongoid=row.mongoid, createdAt=row.createdAt, updatedAt=row.updatedAt)
             cursor.execute(upsertQuery)
             conn.commit()
-            print(row)
     finally:
         if conn is not None:
             conn.close()
@@ -103,18 +102,19 @@ def getMongoCustomerProfileDataframe(CPrecentUpdatedAt):
         .option(mongoCollectionOption, mongoCollection)\
         .option("pipeline", pipeline)\
         .load()
-    mongoCustomerProfileDF = mongoCustomerProfileDF.select(sf.col('_id.oid').alias('lenderid'),'user', 'lpinfo', 'createdAt', 'updatedAt')
-    mongoCustomerProfileDF.printSchema()
     return mongoCustomerProfileDF
 
 def writeDataframetoPG(df, pgDB):
     df.write.format('jdbc').mode('append').option('url', pgConnUrl).option('user', pgUser)\
-        .option('password', pgPassword).option('dbtable', pgDB).option("driver", "org.postgresql.Driver").save()
+        .option('password', pgPassword).option('dbtable', pgDB).option("driver", "org.postgresql.Driver").option("stringtype","unspecified").save()
 
 def upsertLenderCustomer():
     lenderRecentUpdatedAt = getMostRecentUpdatedAt('lender_customers')
     mongoCustomerProfileDF = getMongoCustomerProfileDataframe(lenderRecentUpdatedAt)
-
+    if mongoCustomerProfileDF.collect() is None or len(mongoCustomerProfileDF.collect()) == 0:
+        print('----- There is no data to be upserted -----')
+        return
+    mongoCustomerProfileDF = mongoCustomerProfileDF.select(sf.col('_id.oid').alias('lenderid'),'user', 'lpinfo', 'createdAt', 'updatedAt')
     query = '(SELECT id,mongoid FROM customers) foo'
     pgCustomerDF = getPGDataframe(query)
     pgCustomerDF.printSchema()
@@ -122,8 +122,8 @@ def upsertLenderCustomer():
     lenderCustomerDF = mongoCustomerProfileDF.join(pgCustomerDF, pgCustomerDF.mongoid == mongoCustomerProfileDF.user.oid, how='left')
     lenderCustomerDF = lenderCustomerDF.select(sf.col('id').alias('customer'), 'createdat', 'updatedAt',
                                                sf.explode('lpinfo').alias('lpinfo'))
-    # lenderCustomerDF = lenderCustomerDF.filter(~sf.col('customer').isNull())
-    lenderCustomerDF.orderBy(sf.desc('customer')).show(20, False)
+    lenderCustomerDF = lenderCustomerDF.filter(~sf.col('customer').isNull())
+    # lenderCustomerDF.orderBy(sf.desc('customer')).show(20, False)
     lenderCustomerDF = lenderCustomerDF\
         .withColumn('rupeek_ref', lenderCustomerDF.lpinfo.rupeekid)\
         .withColumn('lender', sf.when(sf.col('lpinfo.name').isNull(), None).otherwise(sf.col('lpinfo.name')))\
@@ -132,9 +132,35 @@ def upsertLenderCustomer():
     lenderCustomerDF = lenderCustomerDF.select('customer', 'createdat', 'updatedat', 'rupeek_ref', 'lender', 'lender_ref')
     lenderCustomerDF = attachIdToDataframe(lenderCustomerDF)
     lenderCustomerDF.printSchema()
-    lenderCustomerDF.show(200, False)
+    print('=========================================')
+    lenderCustomerDF.count()
+    print('=========================================')
+    # requiredCustomers = [row.customers for row in lenderCustomerDF.collect()]
+    # requiredCustomersString = "', '".join(requiredCustomers)
+    # requiredLenderRefCustomersQuery = "(SELECT customer, lender_ref FROM lender_customer WHERE customer IN ('"+requiredCustomersString+"')) foo"
+    # pgLenderRefCustomerDF = getPGDataframe(requiredLenderRefCustomersQuery)
+    # lenderCustomerDF = lenderCustomerDF.filter(~(sf.concat(sf.col('customer'), sf.lit('_'), sf.col('lender_ref')))
+    #                                            .isin([str(row.customer)+'_'+str(row.lender_ref) for row in pgLenderRefCustomerDF.collect()]))
     # pgLenderCustomerDF = getPGDataframe('lendercustomers')
-    return lenderCustomerDF
+    # writeDataframetoPG(lenderCustomerDF, "lender_customers")
+    lenderCustomersToBeUpserted = [row for row in lenderCustomerDF.collect()]
+    conn = None
+    try:
+        conn = psycopg2.connect(
+            "postgresql://csdbadmin:FI0Yd*3HHfetKyUs@dataexp.cgmpejvbbeww.ap-south-1.rds.amazonaws.com/customerinfo?")
+        cursor = conn.cursor()
+        conn.commit()
+        for row in lenderCustomersToBeUpserted:
+            upsertQuery = 'INSERT INTO lender_customer (id,customer,lender_ref,rupeek_ref,lender,"createdAt","updatedAt")' \
+                          ' VALUES (\'{id}\',\'{customer}\',\'{lender_ref}\',\'{rupeek_ref}\',\'{lender}\',\'{createdAt}\', \'{updatedAt}\')' \
+                          ' ON CONFLICT (customer,lender_ref) DO UPDATE SET "rupeek_ref" = EXCLUDED."rupeek_ref", "lender" = EXCLUDED."lender"' \
+                          ' ""createdAt" = EXCLUDED."createdAt", "updatedAt" = EXCLUDED."updatedAt"'.format(
+                id=row.id, customer=row.customer, lender_ref=row.lender_ref, lender = row.lender, rupeek_ref = row.rupeek_ref,  createdAt=row.createdAt, updatedAt=row.updatedAt)
+            cursor.execute(upsertQuery)
+            conn.commit()
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def attachIdToDataframe(dataframe):
@@ -147,10 +173,10 @@ def main():
     global spark
     spark = SparkSession.builder.appName("Mongo to Postgres Transformation").getOrCreate()
     customerRecentUpdatedAt = getMostRecentUpdatedAt('customers')
-    # mongoUserDF = getMongoUserDataframe(customerRecentUpdatedAt)
-    # upsertCustomers(mongoUserDF)
+    mongoUserDF = getMongoUserDataframe(customerRecentUpdatedAt)
+    upsertCustomers(mongoUserDF)
     # upsertPhones(mongoUserDF)
-    upsertLenderCustomer()
+    # upsertLenderCustomer()
 
 
 if __name__ == '__main__':
